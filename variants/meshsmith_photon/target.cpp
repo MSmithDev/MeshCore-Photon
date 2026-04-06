@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "target.h"
 #include <helpers/ArduinoHelpers.h>
+#include <math.h>
 
 MeshsmithPhotonNRFBoard board;
 #ifdef DISPLAY_CLASS
@@ -23,9 +24,9 @@ AutoDiscoverRTCClock rtc_clock(fallback_clock);
   #else
     MicroNMEALocationProvider nmea = MicroNMEALocationProvider(Serial1, &rtc_clock);
   #endif
-  EnvironmentSensorManager sensors = EnvironmentSensorManager(nmea);
+  PhotonSensorManager sensors = PhotonSensorManager(nmea);
 #else
-  EnvironmentSensorManager sensors;
+  PhotonSensorManager sensors;
 #endif
 
 bool radio_init() {
@@ -52,4 +53,20 @@ void radio_set_tx_power(int8_t dbm) {
 mesh::LocalIdentity radio_new_identity() {
   RadioNoiseListener rng(radio);
   return mesh::LocalIdentity(&rng);  // create new random identity
+}
+
+bool PhotonSensorManager::querySensors(uint8_t requester_permissions, CayenneLPP& telemetry) {
+  EnvironmentSensorManager::querySensors(requester_permissions, telemetry);
+
+  if ((requester_permissions & TELEM_PERM_BASE) == 0) {
+    return true;
+  }
+
+  float charge_rate_pct_per_hour = board.getBattChargeRatePctPerHour();
+  if (!isnan(charge_rate_pct_per_hour)) {
+    // Reuse a standard signed Cayenne field so existing clients can decode it; the payload value remains %/hr.
+    telemetry.addCurrent(TELEM_CHANNEL_BATTERY_CHARGE_RATE, charge_rate_pct_per_hour);
+  }
+
+  return true;
 }
