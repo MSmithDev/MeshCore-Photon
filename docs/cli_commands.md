@@ -820,6 +820,23 @@ region save
 #### Sync this node's clock with GPS time
 **Usage:** 
 - `gps sync`
+- `gps time fetch`
+
+**Note:** `gps sync` is kept as a compatibility alias for `gps time fetch`.
+
+---
+
+#### View or configure GPS-based clock sync
+**Usage:**
+- `gps time`
+- `gps time fetch`
+- `gps time <hours>`
+
+**Parameters:**
+- `hours`: integer hours between automatic GPS clock sync attempts
+  - `0`: disable periodic GPS clock sync
+
+**Note:** `gps time` shows the current device clock, current GPS fix state, and the configured automatic sync interval.
 
 ---
 

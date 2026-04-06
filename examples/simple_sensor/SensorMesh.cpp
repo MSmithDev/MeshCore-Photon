@@ -728,6 +728,7 @@ SensorMesh::SensorMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::Millise
   // GPS defaults
   _prefs.gps_enabled = 0;
   _prefs.gps_interval = 0;
+  _prefs.gps_time_interval = 0;
   _prefs.advert_loc_policy = ADVERT_LOC_PREFS;
 }
 

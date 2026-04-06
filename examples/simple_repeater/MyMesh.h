@@ -160,6 +160,15 @@ protected:
 #if ENV_INCLUDE_GPS == 1
   void applyGpsPrefs() {
     sensors.setSettingValue("gps", _prefs.gps_enabled?"1":"0");
+    LocationProvider* location = sensors.getLocationProvider();
+    if (location != NULL) {
+      location->setTimeSyncInterval(_prefs.gps_time_interval);
+      if (_prefs.gps_time_interval > 0) {
+        location->syncTime();
+      } else {
+        location->cancelTimeSync();
+      }
+    }
   }
 #endif
 

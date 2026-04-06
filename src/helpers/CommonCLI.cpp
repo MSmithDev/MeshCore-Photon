@@ -18,6 +18,51 @@ static uint32_t _atoi(const char* sp) {
   return n;
 }
 
+static void formatUTC(char* dest, size_t size, uint32_t epoch) {
+  DateTime dt = DateTime(epoch);
+  snprintf(dest, size, "%02d:%02d - %d/%d/%d UTC", dt.hour(), dt.minute(), dt.day(), dt.month(), dt.year());
+}
+
+static void formatClockSetReply(char* reply, uint32_t epoch) {
+  char time_buf[40];
+  formatUTC(time_buf, sizeof(time_buf), epoch);
+  snprintf(reply, 140, "OK - clock set: %s", time_buf);
+}
+
+static void formatClockStatusReply(char* reply, uint32_t epoch, LocationProvider* location, uint32_t interval_seconds) {
+  char time_buf[40];
+  char interval_buf[24];
+  formatUTC(time_buf, sizeof(time_buf), epoch);
+  if (interval_seconds == 0) {
+    strcpy(interval_buf, "off");
+  } else {
+    snprintf(interval_buf, sizeof(interval_buf), "%luh", (unsigned long)(interval_seconds / 3600));
+  }
+  snprintf(reply, 140, "%s, gps %s, sync %s%s",
+      time_buf,
+      location->isValid() ? "fix" : "nofix",
+      interval_buf,
+      location->waitingTimeSync() ? ", pending" : "");
+}
+
+static bool syncGPSClockNow(LocationProvider* location, mesh::RTCClock* rtc, char* reply) {
+  if (location == NULL) {
+    strcpy(reply, "gps provider not found");
+    return false;
+  }
+  if (!location->isEnabled()) {
+    strcpy(reply, "ERR: gps is off");
+    return false;
+  }
+  if (location->syncTimeNow(rtc)) {
+    formatClockSetReply(reply, rtc->getCurrentTime());
+    return true;
+  }
+  location->syncTime();
+  strcpy(reply, "waiting for gps time");
+  return false;
+}
+
 static bool isValidName(const char *n) {
   while (*n) {
     if (*n == '[' || *n == ']' || *n == '\\' || *n == ':' || *n == ',' || *n == '?' || *n == '*') return false;
@@ -87,7 +132,8 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
     file.read((uint8_t *)&_prefs->discovery_mod_timestamp, sizeof(_prefs->discovery_mod_timestamp)); // 162
     file.read((uint8_t *)&_prefs->adc_multiplier, sizeof(_prefs->adc_multiplier));                 // 166
     file.read((uint8_t *)_prefs->owner_info, sizeof(_prefs->owner_info));                          // 170
-    // next: 290
+    file.read((uint8_t *)&_prefs->gps_time_interval, sizeof(_prefs->gps_time_interval));           // 290
+    // next: 294
 
     // sanitise bad pref values
     _prefs->rx_delay_base = constrain(_prefs->rx_delay_base, 0, 20.0f);
@@ -114,6 +160,7 @@ void CommonCLI::loadPrefsInt(FILESYSTEM* fs, const char* filename) {
 
     _prefs->gps_enabled = constrain(_prefs->gps_enabled, 0, 1);
     _prefs->advert_loc_policy = constrain(_prefs->advert_loc_policy, 0, 2);
+    _prefs->gps_time_interval = constrain(_prefs->gps_time_interval, (uint32_t)0, (uint32_t)(720UL * 3600UL));
 
     // sanitise settings
     _prefs->rx_boosted_gain = constrain(_prefs->rx_boosted_gain, 0, 1); // boolean
@@ -177,7 +224,8 @@ void CommonCLI::savePrefs(FILESYSTEM* fs) {
     file.write((uint8_t *)&_prefs->discovery_mod_timestamp, sizeof(_prefs->discovery_mod_timestamp)); // 162
     file.write((uint8_t *)&_prefs->adc_multiplier, sizeof(_prefs->adc_multiplier));                 // 166
     file.write((uint8_t *)_prefs->owner_info, sizeof(_prefs->owner_info));                          // 170
-    // next: 290
+    file.write((uint8_t *)&_prefs->gps_time_interval, sizeof(_prefs->gps_time_interval));           // 290
+    // next: 294
 
     file.close();
   }
@@ -753,9 +801,45 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         }
       }
 #if ENV_INCLUDE_GPS == 1
+    } else if (memcmp(command, "gps time fetch", 14) == 0 && command[14] == 0) {
+      syncGPSClockNow(_sensors->getLocationProvider(), getRTCClock(), reply);
+    } else if (memcmp(command, "gps time ", 9) == 0) {
+      LocationProvider * l = _sensors->getLocationProvider();
+      if (l == NULL) {
+        strcpy(reply, "gps provider not found");
+      } else if (command[9] < '0' || command[9] > '9') {
+        strcpy(reply, "ERR: invalid hours");
+      } else {
+        uint32_t hours = _atoi(&command[9]);
+        if (hours > 720) {
+          strcpy(reply, "ERR: max 720 hours");
+        } else {
+          _prefs->gps_time_interval = hours * 3600UL;
+          l->setTimeSyncInterval(_prefs->gps_time_interval);
+          if (_prefs->gps_time_interval > 0) {
+            l->syncTime();
+            snprintf(reply, 140, "gps time sync every %luh", (unsigned long) hours);
+          } else {
+            l->cancelTimeSync();
+            strcpy(reply, "gps time sync off");
+          }
+          savePrefs();
+        }
+      }
+    } else if (memcmp(command, "gps time", 8) == 0 && command[8] == 0) {
+      LocationProvider * l = _sensors->getLocationProvider();
+      if (l != NULL) {
+        formatClockStatusReply(reply, getRTCClock()->getCurrentTime(), l, _prefs->gps_time_interval);
+      } else {
+        strcpy(reply, "gps provider not found");
+      }
     } else if (memcmp(command, "gps on", 6) == 0) {
       if (_sensors->setSettingValue("gps", "1")) {
         _prefs->gps_enabled = 1;
+        LocationProvider * l = _sensors->getLocationProvider();
+        if (l != NULL && _prefs->gps_time_interval > 0) {
+          l->syncTime();
+        }
         savePrefs();
         strcpy(reply, "ok");
       } else {
@@ -770,13 +854,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         strcpy(reply, "gps toggle not found");
       }
     } else if (memcmp(command, "gps sync", 8) == 0) {
-      LocationProvider * l = _sensors->getLocationProvider();
-      if (l != NULL) {
-        l->syncTime();
-        strcpy(reply, "ok");
-      } else {
-        strcpy(reply, "gps provider not found");
-      }
+      syncGPSClockNow(_sensors->getLocationProvider(), getRTCClock(), reply);
     } else if (memcmp(command, "gps setloc", 10) == 0) {
       _prefs->node_lat = _sensors->node_lat;
       _prefs->node_lon = _sensors->node_lon;

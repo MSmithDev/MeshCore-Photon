@@ -45,7 +45,6 @@ class MicroNMEALocationProvider : public LocationProvider {
     long next_check = 0;
     long time_valid = 0;
     unsigned long _last_time_sync = 0;
-    static const unsigned long TIME_SYNC_INTERVAL = 1800000; // Re-sync every 30 minutes
 
 public :
     MicroNMEALocationProvider(Stream& ser, mesh::RTCClock* clock = NULL, int pin_reset = GPS_RESET, int pin_en = GPS_EN,RefCountedDigitalPin* peripher_power=NULL) :
@@ -121,11 +120,27 @@ public :
     }
     long satellitesCount() override { return nmea.getNumSatellites(); }
     bool isValid() override { return nmea.isValid(); }
+    bool hasValidTimestamp() override {
+        int year = nmea.getYear();
+        int month = nmea.getMonth();
+        int day = nmea.getDay();
+        return isValid() &&
+            year >= 2000 && year <= 2099 &&
+            month >= 1 && month <= 12 &&
+            day >= 1 && day <= 31;
+    }
 
     long getTimestamp() override { 
         DateTime dt(nmea.getYear(), nmea.getMonth(),nmea.getDay(),nmea.getHour(),nmea.getMinute(),nmea.getSecond());
         return dt.unixtime();
     } 
+
+    bool syncTimeNow(mesh::RTCClock* clock) override {
+        mesh::RTCClock* target_clock = clock != NULL ? clock : _clock;
+        if (!LocationProvider::syncTimeNow(target_clock)) return false;
+        _last_time_sync = millis();
+        return true;
+    }
 
     void sendSentence(const char *sentence) override {
         nmea.sendSentence(*_gps_serial, sentence);
@@ -145,16 +160,13 @@ public :
 
         if (millis() > next_check) {
             next_check = millis() + 1000;
-            // Re-enable time sync periodically when GPS has valid fix
-            if (!_time_sync_needed && _clock != NULL && (millis() - _last_time_sync) > TIME_SYNC_INTERVAL) {
+            // Re-enable time sync when the configured interval has elapsed.
+            if (!_time_sync_needed && _clock != NULL && _time_sync_interval > 0 &&
+                _last_time_sync > 0 && (millis() - _last_time_sync) > (_time_sync_interval * 1000UL)) {
                 _time_sync_needed = true;
             }
             if (_time_sync_needed && time_valid > 2) {
-                if (_clock != NULL) {
-                    _clock->setCurrentTime(getTimestamp());
-                    _time_sync_needed = false;
-                    _last_time_sync = millis();
-                }
+                syncTimeNow(_clock);
             }
             if (isValid()) {
                 time_valid ++;
